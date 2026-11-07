@@ -542,6 +542,6 @@ pub unsafe extern "system" fn JNI_OnLoad(
     _: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
     use jni::sys::JNI_VERSION_1_6;
-    set_vm_global(vm);
-    JNI_VERSION_1_6 as jint
+    android::set_vm(vm);
+    JNI_VERSION_1_6 as jni::sys::jint
 }
