@@ -34,7 +34,7 @@ use std::str;
 
 // Re-export types needed by `ops.rs` (which is shared between the binary
 // and the library crate).
-pub use connect::{ConnectOpts, DeviceHandle};
+pub use connect::{ConnectOpts, DeviceHandle, RuntimePort};
 
 // Import the Storage trait to get `as_str()` on StorageKind variants.
 use penumbra_mtk::Storage;
