@@ -2,40 +2,79 @@
 
 ## Runtime ownership
 
-Adbify is the Android runtime owner. Umbrage must not package another
-libusb implementation for Android and must not silently fall back to an
-unrelated system libusb.
+Adbify owns Android USB permission and the active `UsbDeviceConnection`.
+The terminal child process must not independently open USBFS or attempt to
+request Android USB permission.
 
-Adbify currently installs these exact files into its private prefix:
+Adbify starts a loopback TCP IPC server from `TerminalService` and passes
+these private environment variables to the terminal shell:
 
-- `$PREFIX/lib/libusb.so`
-- `$PREFIX/lib/libusb_bridge.so`
+- `ADBIFY_USB_SOCKET=127.0.0.1:<ephemeral-port>`
+- `ADBIFY_USB_TOKEN=<32-byte-random-token-as-hex>`
 
-The Adbify terminal process exports:
+The server binds only to `127.0.0.1`. Each client must present the per-service
+random token before the server sends device metadata or accepts USB requests.
+The token is not persisted and changes whenever the service restarts.
 
-- `PREFIX=<app-private files/usr>`
-- `LD_LIBRARY_PATH=$PREFIX/lib:<ApplicationInfo.nativeLibraryDir>`
-
-The Android executable must verify both files exist before USB initialization.
-Keep any dynamic loader handles alive for the complete lifetime of libusb use.
-Load the bridge before the libusb entry points and log canonical resolved paths.
-Do not copy or overwrite the Adbify-managed libraries.
+The terminal child process and the Android app run under the same application
+UID. The IPC token provides an additional barrier against unrelated local
+processes. Do not expose the server on a wildcard or external network interface.
 
 ## Permission and transport
 
-A terminal subprocess runs under the Adbify application UID, but that fact alone
-does not confer a USB Host permission grant. The permission is granted by
-Android's `UsbManager` to the app for a selected device. A process that merely
-inherits `LD_LIBRARY_PATH` cannot independently request that grant.
+The user selects an attached MediaTek device from Adbify's **Connect MTK USB**
+menu action. Adbify requests USB permission through `UsbManager`, opens the
+device, claims an interface containing bulk IN and OUT endpoints, and retains
+the resulting connection for the IPC session.
 
-The bridge must therefore consume a session which Adbify has already opened
-after its permission flow, or call a documented Adbify in-process API. It must
-not run a second independent USB backend in parallel with Adbify.
+On Android, the CLI's default `--backend auto` and explicit
+`--backend adbify` use the IPC transport. The transport implements
+Penumbra's `MtkPort` interface and forwards bulk and control transfers to
+Adbify's retained `UsbDeviceConnection`.
 
-The current Umbrage CLI JNI module is only a JNI port prototype. Its session
-API is not yet connected to the existing C ABI command functions, so it must
-not be described as a working CLI USB transport until that connection and
-end-to-end device tests are complete.
+Explicit `--backend libusb` remains available for environments where direct
+USBFS access is deliberately configured. It is not the default Android path.
+
+## Protocol v1
+
+All integer fields use network byte order (big-endian). The client sends the
+32-byte authentication token immediately after connecting. The server replies
+with a 10-byte handshake:
+
+| Offset | Size | Meaning |
+|---:|---:|---|
+| 0 | 4 | ASCII `UMBR` |
+| 4 | 2 | USB vendor ID |
+| 6 | 2 | USB product ID |
+| 8 | 1 | connection type: 0 BROM, 1 Preloader, 2 DA |
+| 9 | 1 | protocol version (1) |
+
+Requests are serialized on one client connection:
+
+- Opcode 1: bulk IN; request contains length and timeout; response contains
+  status, actual length, and received bytes.
+- Opcode 2: bulk OUT; request contains timeout, length, and payload; response
+  contains status and transferred length.
+- Opcode 3: control IN; request contains request type, request, value, index,
+  timeout, and length; response contains status, actual length, and bytes.
+- Opcode 4: control OUT; request contains the same control fields followed by
+  payload; response contains status and a zero payload length.
+
+Bulk transfers are capped at 16 KiB per IPC request for compatibility with
+Android's `UsbDeviceConnection.bulkTransfer`. Control payloads are capped at
+1 MiB. A nonzero status indicates an Android USB transfer failure.
+
+## Lifecycle and limitations
+
+The server is owned by `TerminalService`. A USB session must be selected in
+Adbify before running a device command. The server accepts one CLI client at a
+time so USB operations cannot interleave. Closing the CLI connection releases
+the IPC client but does not close the user's USB session; the session remains
+available until replaced or the service stops.
+
+The first implementation supports one selected device and a single claimed
+bulk IN/OUT interface. USB re-enumeration requires a new Android permission
+and session and is not performed transparently by the IPC transport.
 
 ## Native deliverables
 
@@ -44,5 +83,6 @@ The workflow builds only `arm64-v8a` and publishes:
 - `libumbrage_cli.so`
 - `umbrage-cli`
 
-The artifact is intended for integration into Adbify's private terminal runtime.
-It does not include or replace `libusb.so` or `libusb_bridge.so`.
+The artifact does not include or replace Adbify-managed `libusb.so` or
+`libusb_bridge.so`. The Android default path uses the app-owned USB session
+instead of relying on dynamic linker configuration for USB permission.
