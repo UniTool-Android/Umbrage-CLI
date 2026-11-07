@@ -42,9 +42,9 @@ impl AndroidIpcPort {
             )))
         })?;
 
-        let mut hello = [0u8; 9];
+        let mut hello = [0u8; 10];
         stream.read_exact(&mut hello).map_err(io_error)?;
-        if &hello[..4] != MAGIC || hello[8] != PROTOCOL_VERSION {
+        if &hello[..4] != MAGIC || hello[9] != PROTOCOL_VERSION {
             return Err(PenumbraError::Connection(ConnectionError::OpenFailed(
                 "invalid Adbify USB bridge handshake".into(),
             )));
@@ -52,7 +52,7 @@ impl AndroidIpcPort {
 
         let vid = u16::from_be_bytes([hello[4], hello[5]]);
         let pid = u16::from_be_bytes([hello[6], hello[7]]);
-        let connection_type = match hello[8 - 1] {
+        let connection_type = match hello[8] {
             0 => ConnectionType::Brom,
             1 => ConnectionType::Preloader,
             2 => ConnectionType::Da,
