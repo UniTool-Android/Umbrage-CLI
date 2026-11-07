@@ -22,7 +22,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-build-${{ github.ref }}
@@ -39,19 +39,15 @@ jobs:
           - abi: arm64-v8a
             target: aarch64-linux-android
             clang: aarch64-linux-android
-            rust_arch: aarch64
           - abi: armeabi-v7a
             target: armv7-linux-androideabi
             clang: armv7a-linux-androideabi
-            rust_arch: arm
           - abi: x86
             target: i686-linux-android
             clang: i686-linux-android
-            rust_arch: x86
           - abi: x86_64
             target: x86_64-linux-android
             clang: x86_64-linux-android
-            rust_arch: x86_64
 
     env:
       ANDROID_API: "24"
@@ -82,7 +78,8 @@ jobs:
           test -x "$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang"
           echo "CC_${{ matrix.target }}=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
           echo "AR_${{ matrix.target }}=$TOOLCHAIN/llvm-ar" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_${{ matrix.target }}_LINKER=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          TARGET_ENV=$(echo "${{ matrix.target }}" | tr "[:lower:]-" "[:upper:]_")
+          echo "CARGO_TARGET_${TARGET_ENV}_LINKER=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
       - name: Cache Cargo
@@ -92,7 +89,7 @@ jobs:
 
       - name: Build Android shared library and CLI
         run: |
-          cargo +nightly build --locked --release --target ${{ matrix.target }} --features android --lib --bin
+          cargo +nightly build --locked --release --target ${{ matrix.target }} --features android --lib --bins
 
       - name: Stage Android outputs
         shell: bash
