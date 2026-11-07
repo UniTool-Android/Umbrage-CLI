@@ -39,15 +39,6 @@ jobs:
           - abi: arm64-v8a
             target: aarch64-linux-android
             clang: aarch64-linux-android
-          - abi: armeabi-v7a
-            target: armv7-linux-androideabi
-            clang: armv7a-linux-androideabi
-          - abi: x86
-            target: i686-linux-android
-            clang: i686-linux-android
-          - abi: x86_64
-            target: x86_64-linux-android
-            clang: x86_64-linux-android
 
     env:
       ANDROID_API: "24"
@@ -140,8 +131,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -d dist/android/jniLibs/arm64-v8a
-          test -d dist/android/bin/arm64-v8a
+          test -s dist/android/jniLibs/arm64-v8a/libumbrage_cli.so
+          test -s dist/android/bin/arm64-v8a/umbrage-cli
 
           find dist/android -type f -print0 | sort -z | xargs -0 sha256sum > dist/android/SHA256SUMS
           cd dist
