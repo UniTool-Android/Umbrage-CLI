@@ -185,8 +185,10 @@ impl MtkPort for AndroidIpcPort {
         }
         if self.connection_type != ConnectionType::Brom {
             const LINE_CODING: [u8; 7] = [0x00, 0x00, 0x0E, 0x00, 0x00, 0x00, 0x08];
-            self.ctrl_out(0x21, 0x20, 0, 1, &LINE_CODING)?;
-            self.ctrl_out(0x21, 0x22, 0x03, 1, &[])?;
+            // Match the existing JNI port: CDC setup is best-effort because
+            // not every preloader interface implements the CDC requests.
+            let _ = self.ctrl_out(0x21, 0x20, 0, 1, &LINE_CODING);
+            let _ = self.ctrl_out(0x21, 0x22, 0x03, 1, &[]);
         }
         self.is_open = true;
         Ok(())
