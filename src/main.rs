@@ -12,7 +12,7 @@
 //!   * Exit codes: 0 success, 1 operational failure, 2 usage error (clap).
 
 #[cfg(target_os = "android")]
-mod android_ipc;
+pub mod android_ipc;
 mod connect;
 mod numbers;
 mod ops;
