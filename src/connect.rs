@@ -48,8 +48,8 @@ pub struct ConnectOpts {
     #[arg(long, global = true)]
     pub preloader: Option<PathBuf>,
 
-    /// USB backend: auto or libusb. (Only these two are compiled in; the
-    /// nusb and serialport backends are feature-gated off in this build.)
+    /// USB backend: auto, libusb, or adbify (Android app-owned USB session).
+    /// The nusb and serialport backends are feature-gated off in this build.
     #[arg(long, global = true, default_value = "auto")]
     pub backend: String,
 
