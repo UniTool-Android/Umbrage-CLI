@@ -21,6 +21,7 @@ pub struct AndroidIpcPort {
     connection_type: ConnectionType,
     port_name: String,
     timeout: Duration,
+    is_open: bool,
 }
 
 impl AndroidIpcPort {
@@ -77,6 +78,7 @@ impl AndroidIpcPort {
             connection_type,
             port_name: format!("USB {vid:04X}:{pid:04X} (Adbify IPC)"),
             timeout: Duration::from_millis(1000),
+            is_open: false,
         })
     }
 
@@ -178,10 +180,20 @@ impl AndroidIpcPort {
 
 impl MtkPort for AndroidIpcPort {
     fn open(&mut self) -> PenumbraResult<()> {
+        if self.is_open {
+            return Ok(());
+        }
+        if self.connection_type != ConnectionType::Brom {
+            const LINE_CODING: [u8; 7] = [0x00, 0x00, 0x0E, 0x00, 0x00, 0x00, 0x08];
+            self.ctrl_out(0x21, 0x20, 0, 1, &LINE_CODING)?;
+            self.ctrl_out(0x21, 0x22, 0x03, 1, &[])?;
+        }
+        self.is_open = true;
         Ok(())
     }
 
     fn close(&mut self) -> PenumbraResult<()> {
+        self.is_open = false;
         self.stream.shutdown(std::net::Shutdown::Both).map_err(io_error)
     }
 
