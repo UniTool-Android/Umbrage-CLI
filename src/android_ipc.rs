@@ -20,6 +20,8 @@ pub struct AndroidIpcPort {
     stream: TcpStream,
     connection_type: ConnectionType,
     port_name: String,
+    vendor_id: u16,
+    product_id: u16,
     timeout: Duration,
     is_open: bool,
 }
@@ -77,14 +79,21 @@ impl AndroidIpcPort {
             stream,
             connection_type,
             port_name: format!("USB {vid:04X}:{pid:04X} (Adbify IPC)"),
+            vendor_id: vid,
+            product_id: pid,
             timeout: Duration::from_millis(1000),
             is_open: false,
         })
     }
 
+    pub fn vendor_id(&self) -> u16 { self.vendor_id }
+
+    pub fn product_id(&self) -> u16 { self.product_id }
+
     fn set_io_timeout(&self) -> PenumbraResult<()> {
-        self.stream.set_read_timeout(Some(self.timeout)).map_err(io_error)?;
-        self.stream.set_write_timeout(Some(self.timeout)).map_err(io_error)?;
+        let ipc_timeout = self.timeout.saturating_add(Duration::from_secs(1));
+        self.stream.set_read_timeout(Some(ipc_timeout)).map_err(io_error)?;
+        self.stream.set_write_timeout(Some(ipc_timeout)).map_err(io_error)?;
         Ok(())
     }
 
