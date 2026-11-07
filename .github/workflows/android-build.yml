@@ -1,0 +1,170 @@
+name: Android Native Builds
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android-build.yml"
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.abi }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            clang: aarch64-linux-android
+            rust_arch: aarch64
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+            clang: armv7a-linux-androideabi
+            rust_arch: arm
+          - abi: x86
+            target: i686-linux-android
+            clang: i686-linux-android
+            rust_arch: x86
+          - abi: x86_64
+            target: x86_64-linux-android
+            clang: x86_64-linux-android
+            rust_arch: x86_64
+
+    env:
+      ANDROID_API: "24"
+      NDK_VERSION: "27.2.12479018"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          sdkmanager --install "ndk;${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install Rust nightly and Android targets
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
+          rustup target add ${{ matrix.target }} --toolchain nightly
+
+      - name: Configure Android cross-compilers
+        shell: bash
+        run: |
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang"
+          echo "CC_${{ matrix.target }}=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "AR_${{ matrix.target }}=$TOOLCHAIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${{ matrix.target }}_LINKER=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-${{ matrix.target }}
+
+      - name: Build Android shared library and CLI
+        run: |
+          cargo +nightly build --locked --release --target ${{ matrix.target }} --features android --lib --bin
+
+      - name: Stage Android outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ABI="${{ matrix.abi }}"
+          TARGET="${{ matrix.target }}"
+          OUT="dist/android"
+          mkdir -p "$OUT/jniLibs/$ABI" "$OUT/bin/$ABI"
+
+          LIB="target/$TARGET/release/libumbrage_cli.so"
+          BIN="target/$TARGET/release/umbrage-cli"
+          test -s "$LIB"
+          test -s "$BIN"
+
+          llvm-strip --strip-unneeded "$LIB"
+          llvm-strip --strip-unneeded "$BIN"
+
+          cp "$LIB" "$OUT/jniLibs/$ABI/libumbrage_cli.so"
+          cp "$BIN" "$OUT/bin/$ABI/umbrage-cli"
+          chmod 0755 "$OUT/bin/$ABI/umbrage-cli"
+
+          file "$OUT/jniLibs/$ABI/libumbrage_cli.so" "$OUT/bin/$ABI/umbrage-cli"
+          llvm-readelf -h "$OUT/jniLibs/$ABI/libumbrage_cli.so" | grep -E 'Class:|Machine:'
+          llvm-readelf -h "$OUT/bin/$ABI/umbrage-cli" | grep -E 'Class:|Machine:'
+
+      - name: Upload ABI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbrage-android-${{ matrix.abi }}
+          path: dist/android/
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Package Android release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download ABI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: umbrage-android-*
+          path: dist/android
+          merge-multiple: true
+
+      - name: Create checksums and release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d dist/android/jniLibs/arm64-v8a
+          test -d dist/android/bin/arm64-v8a
+
+          find dist/android -type f -print0 | sort -z | xargs -0 sha256sum > dist/android/SHA256SUMS
+          cd dist
+          tar -czf umbrage-android-native.tar.gz android
+          zip -qr umbrage-android-native.zip android
+
+      - name: Upload combined Android package
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbrage-android-native
+          path: |
+            dist/umbrage-android-native.tar.gz
+            dist/umbrage-android-native.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach packages to GitHub release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/umbrage-android-native.tar.gz
+            dist/umbrage-android-native.zip
