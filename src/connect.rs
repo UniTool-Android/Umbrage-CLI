@@ -148,7 +148,10 @@ fn find_port(opts: &ConnectOpts) -> Result<RuntimePort> {
         #[cfg(target_os = "android")]
         if backend_name == "auto" || backend_name == "adbify" {
             match crate::android_ipc::AndroidIpcPort::connect_from_env() {
-                Ok(port) => return Ok(RuntimePort::Adbify(port)),
+                Ok(mut port) => {
+                    port.open().context("failed to initialize Adbify USB transport")?;
+                    return Ok(RuntimePort::Adbify(port));
+                }
                 Err(error) => last_bridge_error = error.to_string(),
             }
         }
