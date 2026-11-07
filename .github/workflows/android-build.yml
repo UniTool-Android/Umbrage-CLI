@@ -8,6 +8,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "docs/**"
       - ".github/workflows/android-build.yml"
   pull_request:
     branches: [main]
@@ -16,40 +17,29 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "docs/**"
       - ".github/workflows/android-build.yml"
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build ${{ matrix.abi }}
+  build-arm64:
+    name: Build Android arm64-v8a
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - abi: arm64-v8a
-            target: aarch64-linux-android
-            clang: aarch64-linux-android
-
     env:
       ANDROID_API: "24"
       NDK_VERSION: "27.2.12479018"
       CARGO_TERM_COLOR: always
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Android SDK and NDK
+      - name: Install Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
@@ -59,102 +49,60 @@ jobs:
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Install Rust nightly and Android targets
+      - name: Install Rust nightly
         run: |
-          rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
-          rustup target add ${{ matrix.target }} --toolchain nightly
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          rustup target add aarch64-linux-android --toolchain nightly
 
-      - name: Configure Android cross-compilers
+      - name: Configure NDK compiler
         shell: bash
         run: |
           TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          test -x "$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang"
-          echo "CC_${{ matrix.target }}=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
-          echo "AR_${{ matrix.target }}=$TOOLCHAIN/llvm-ar" >> "$GITHUB_ENV"
-          TARGET_ENV=$(echo "${{ matrix.target }}" | tr "[:lower:]-" "[:upper:]_")
-          echo "CARGO_TARGET_${TARGET_ENV}_LINKER=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          test -x "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
+          echo "CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$TOOLCHAIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          key: android-${{ matrix.target }}
+          key: umbrage-android-arm64
 
-      - name: Build Android shared library and CLI
-        run: |
-          cargo +nightly build --locked --release --target ${{ matrix.target }} --features android --lib --bins
+      - name: Build Android library and executable
+        run: cargo +nightly build --locked --release --target aarch64-linux-android --features android --lib --bins
 
-      - name: Stage Android outputs
+      - name: Stage and inspect output
         shell: bash
         run: |
           set -euo pipefail
-          ABI="${{ matrix.abi }}"
-          TARGET="${{ matrix.target }}"
-          OUT="dist/android"
-          mkdir -p "$OUT/jniLibs/$ABI" "$OUT/bin/$ABI"
+          OUT="dist/android/arm64-v8a"
+          mkdir -p "$OUT"
+          cp target/aarch64-linux-android/release/libumbrage_cli.so "$OUT/libumbrage_cli.so"
+          cp target/aarch64-linux-android/release/umbrage-cli "$OUT/umbrage-cli"
+          chmod 0755 "$OUT/umbrage-cli"
+          llvm-strip --strip-unneeded "$OUT/libumbrage_cli.so"
+          llvm-strip --strip-unneeded "$OUT/umbrage-cli"
+          file "$OUT/libumbrage_cli.so" "$OUT/umbrage-cli"
+          llvm-readelf -h "$OUT/libumbrage_cli.so" | grep -E 'Class:|Machine:'
+          llvm-readelf -h "$OUT/umbrage-cli" | grep -E 'Class:|Machine:'
+          sha256sum "$OUT/libumbrage_cli.so" "$OUT/umbrage-cli" > "$OUT/SHA256SUMS"
 
-          LIB="target/$TARGET/release/libumbrage_cli.so"
-          BIN="target/$TARGET/release/umbrage-cli"
-          test -s "$LIB"
-          test -s "$BIN"
-
-          llvm-strip --strip-unneeded "$LIB"
-          llvm-strip --strip-unneeded "$BIN"
-
-          cp "$LIB" "$OUT/jniLibs/$ABI/libumbrage_cli.so"
-          cp "$BIN" "$OUT/bin/$ABI/umbrage-cli"
-          chmod 0755 "$OUT/bin/$ABI/umbrage-cli"
-
-          file "$OUT/jniLibs/$ABI/libumbrage_cli.so" "$OUT/bin/$ABI/umbrage-cli"
-          llvm-readelf -h "$OUT/jniLibs/$ABI/libumbrage_cli.so" | grep -E 'Class:|Machine:'
-          llvm-readelf -h "$OUT/bin/$ABI/umbrage-cli" | grep -E 'Class:|Machine:'
-
-      - name: Upload ABI artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: umbrage-android-${{ matrix.abi }}
-          path: dist/android/
+          name: umbrage-adbify-arm64-v8a
+          path: dist/android/arm64-v8a/
           if-no-files-found: error
           retention-days: 14
 
-  package:
-    name: Package Android release
-    needs: build
+  host-check:
+    name: Host tests and formatting
     runs-on: ubuntu-24.04
     steps:
-      - name: Download ABI artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          pattern: umbrage-android-*
-          path: dist/android
-          merge-multiple: true
-
-      - name: Create checksums and release archives
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s dist/android/jniLibs/arm64-v8a/libumbrage_cli.so
-          test -s dist/android/bin/arm64-v8a/umbrage-cli
-
-          find dist/android -type f -print0 | sort -z | xargs -0 sha256sum > dist/android/SHA256SUMS
-          cd dist
-          tar -czf umbrage-android-native.tar.gz android
-          zip -qr umbrage-android-native.zip android
-
-      - name: Upload combined Android package
-        uses: actions/upload-artifact@v4
-        with:
-          name: umbrage-android-native
-          path: |
-            dist/umbrage-android-native.tar.gz
-            dist/umbrage-android-native.zip
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Attach packages to GitHub release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/umbrage-android-native.tar.gz
-            dist/umbrage-android-native.zip
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Unit tests
+        run: cargo test --locked
