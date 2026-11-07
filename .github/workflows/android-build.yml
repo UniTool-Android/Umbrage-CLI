@@ -51,6 +51,8 @@ jobs:
 
       - name: Install Android SDK and NDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install NDK
         run: |
