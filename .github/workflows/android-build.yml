@@ -9,6 +9,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".github/workflows/android-build.yml"
+      - "docs/**"
   pull_request:
     branches: [main]
     paths:
@@ -17,6 +18,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".github/workflows/android-build.yml"
+      - "docs/**"
   workflow_dispatch:
   release:
     types: [published]
