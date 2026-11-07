@@ -1,22 +1,30 @@
-# Adbify USB runtime integration contract
+# Adbify USB runtime integration
 
-This project must use the exact Adbify-packaged ARM64 native libraries:
-- `$PREFIX/lib/libusb_bridge.so`
+Target runtime paths supplied by Adbify:
+
 - `$PREFIX/lib/libusb.so`
+- `$PREFIX/lib/libusb-1.0.so` (same packaged library alias)
+- `$PREFIX/lib/libusb_bridge.so`
+- `UNITOOL_LIBUSB_PATH` and `UNITOOL_LIBUSB_BRIDGE_PATH`
+- `LD_LIBRARY_PATH` includes the Adbify prefix library directory
 
-The terminal runtime exports:
-- `PREFIX=<app-private files/usr>`
-- `LD_LIBRARY_PATH=$PREFIX/lib:<ApplicationInfo.nativeLibraryDir>`
-- `UNITOOL_LIBUSB_PATH=$PREFIX/lib/libusb.so`
-- `UNITOOL_LIBUSB_BRIDGE_PATH=$PREFIX/lib/libusb_bridge.so`
+## Current implementation status
 
-The paths above are canonicalized by the app before starting a child process. Clients must never silently fall back to system libusb on Android. Missing bridge/library files must produce a clear startup error. Keep CDLL handles alive for the lifetime of PyUSB/libusb use, preload bridge with RTLD_GLOBAL before libusb, and verify the loaded file paths.
+This CLI currently enables the `rusb` vendored feature, which builds/links a separate libusb implementation. It is **not yet using Adbify's packaged libusb**.
 
-USB permissions:
-- USB host permission is granted by Android for the app UID/device via UsbManager.
-- A child CLI process cannot independently obtain Android UsbManager permission. Any bridge relying on app-side permission brokerage needs a documented IPC/JNI contract and an open app-side service/session.
-- Do not claim that the terminal environment alone grants USB permission.
-- Keep non-Android PyUSB backend behavior unchanged.
+Removing vendoring alone is insufficient: the Android build must link against the exact Adbify library and arrange bridge loading before libusb's dynamic dependency is resolved. More importantly, Android USB permission is owned by the Adbify app UID; a standalone child process cannot acquire that permission from environment variables.
 
-Architecture goal:
-Adbify is the only Android USB backend/runtime owner. MTKClient and Umbrage consume it; do not statically or dynamically load a second libusb build, do not use raw Android bulkTransfer in parallel, and do not ship duplicate USB drivers.
+The Adbify repository currently has no published bridge source, ABI/header, IPC protocol, or Kotlin permission/session service. Do not replace the existing backend with guessed symbols or claim working USB I/O until those interfaces are available.
+
+## Required integration contract
+
+Once the bridge ABI is supplied, implement a single Android backend used by both the CLI binary and JNI library:
+
+1. Load the Adbify bridge and libusb in the documented order.
+2. Acquire/release an app-authorized USB session using the documented API.
+3. Route enumeration, interface claim/release, control transfers, bulk transfers, and disconnect events through that session.
+4. Keep the current non-Android libusb backend unchanged.
+5. Add ARM64 CI checks for dynamic dependencies and runtime loading.
+6. Validate on-device with permission grant, enumeration, claim, transfers, and reconnect.
+
+Do not ship a statically vendored libusb alongside the Adbify runtime.
