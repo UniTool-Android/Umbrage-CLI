@@ -5,8 +5,7 @@
 //! here; it never opens USBFS or asks Android for USB permission itself.
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::net::TcpStream;
 use std::time::Duration;
 
 use penumbra_mtk::error::{ConnectionError, Error as PenumbraError, Result as PenumbraResult};
@@ -18,7 +17,7 @@ const MAX_TRANSFER: usize = 1024 * 1024;
 const TRANSFER_CHUNK: usize = 16 * 1024;
 
 pub struct AndroidIpcPort {
-    stream: UnixStream,
+    stream: TcpStream,
     connection_type: ConnectionType,
     port_name: String,
     timeout: Duration,
@@ -26,21 +25,31 @@ pub struct AndroidIpcPort {
 
 impl AndroidIpcPort {
     pub fn connect_from_env() -> PenumbraResult<Self> {
-        let path = std::env::var("ADBIFY_USB_SOCKET").map_err(|_| {
+        let endpoint = std::env::var("ADBIFY_USB_SOCKET").map_err(|_| {
             PenumbraError::Connection(ConnectionError::OpenFailed(
                 "ADBIFY_USB_SOCKET is not set; connect an MTK device in Adbify first".into(),
             ))
         })?;
-        Self::connect(Path::new(&path))
-    }
+        let token_hex = std::env::var("ADBIFY_USB_TOKEN").map_err(|_| {
+            PenumbraError::Connection(ConnectionError::OpenFailed(
+                "ADBIFY_USB_TOKEN is not set; restart the Adbify terminal session".into(),
+            ))
+        })?;
+        let token = hex::decode(token_hex).map_err(|e| {
+            PenumbraError::Connection(ConnectionError::OpenFailed(format!("invalid Adbify IPC token: {e}")))
+        })?;
+        if token.len() != 32 {
+            return Err(PenumbraError::Connection(ConnectionError::OpenFailed(
+                "Adbify IPC token must be 32 bytes".into(),
+            )));
+        }
 
-    pub fn connect(path: &Path) -> PenumbraResult<Self> {
-        let mut stream = UnixStream::connect(path).map_err(|e| {
+        let mut stream = TcpStream::connect(&endpoint).map_err(|e| {
             PenumbraError::Connection(ConnectionError::OpenFailed(format!(
-                "cannot connect to Adbify USB bridge at {}: {e}",
-                path.display()
+                "cannot connect to Adbify USB bridge at {endpoint}: {e}"
             )))
         })?;
+        stream.write_all(&token).map_err(io_error)?;
 
         let mut hello = [0u8; 10];
         stream.read_exact(&mut hello).map_err(io_error)?;
