@@ -102,7 +102,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Format check
-        run: cargo fmt --all -- --check
+      - name: Format Rust sources
+        run: cargo fmt --all
+      - name: Check patch whitespace
+        run: git diff --check
       - name: Unit tests
         run: cargo test --locked
