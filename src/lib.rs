@@ -13,6 +13,8 @@
 
 #![allow(non_snake_case, non_camel_case_types)]
 
+#[cfg(target_os = "android")]
+mod android_ipc;
 mod connect;
 mod numbers;
 mod ops;
