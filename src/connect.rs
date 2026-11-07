@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 
-use penumbra_mtk::port::{PortBackend, PortType};
+use penumbra_mtk::port::{ConnectionType, MtkPort, PortBackend, PortType};
 use penumbra_mtk::{Device, DeviceBuilder};
 
 use crate::repo;
@@ -82,8 +82,32 @@ pub struct ConnectOpts {
     pub refresh_template: bool,
 }
 
+
+pub enum RuntimePort {
+    Native(PortType),
+    #[cfg(target_os = "android")]
+    Adbify(crate::android_ipc::AndroidIpcPort),
+}
+
+impl MtkPort for RuntimePort {
+    fn open(&mut self) -> penumbra_mtk::error::Result<()> { match self { Self::Native(p) => p.open(), #[cfg(target_os = "android")] Self::Adbify(p) => p.open() } }
+    fn close(&mut self) -> penumbra_mtk::error::Result<()> { match self { Self::Native(p) => p.close(), #[cfg(target_os = "android")] Self::Adbify(p) => p.close() } }
+    fn reenumerate(&mut self, v: u16, p: u16) -> penumbra_mtk::error::Result<()> { match self { Self::Native(x) => x.reenumerate(v,p), #[cfg(target_os = "android")] Self::Adbify(x) => x.reenumerate(v,p) } }
+    fn read_exact(&mut self, b: &mut [u8]) -> penumbra_mtk::error::Result<usize> { match self { Self::Native(x) => x.read_exact(b), #[cfg(target_os = "android")] Self::Adbify(x) => x.read_exact(b) } }
+    fn write_all(&mut self, b: &[u8]) -> penumbra_mtk::error::Result<()> { match self { Self::Native(x) => x.write_all(b), #[cfg(target_os = "android")] Self::Adbify(x) => x.write_all(b) } }
+    fn flush(&mut self) -> penumbra_mtk::error::Result<()> { match self { Self::Native(x) => x.flush(), #[cfg(target_os = "android")] Self::Adbify(x) => x.flush() } }
+    fn get_baudrate(&self) -> u32 { match self { Self::Native(x) => x.get_baudrate(), #[cfg(target_os = "android")] Self::Adbify(x) => x.get_baudrate() } }
+    fn get_port_name(&self) -> String { match self { Self::Native(x) => x.get_port_name(), #[cfg(target_os = "android")] Self::Adbify(x) => x.get_port_name() } }
+    fn set_timeout(&mut self, t: Duration) -> penumbra_mtk::error::Result<()> { match self { Self::Native(x) => x.set_timeout(t), #[cfg(target_os = "android")] Self::Adbify(x) => x.set_timeout(t) } }
+    fn get_timeout(&self) -> Duration { match self { Self::Native(x) => x.get_timeout(), #[cfg(target_os = "android")] Self::Adbify(x) => x.get_timeout() } }
+    fn connection_type(&self) -> ConnectionType { match self { Self::Native(x) => x.connection_type(), #[cfg(target_os = "android")] Self::Adbify(x) => x.connection_type() } }
+    fn set_connection_type(&mut self, t: ConnectionType) -> penumbra_mtk::error::Result<()> { match self { Self::Native(x) => x.set_connection_type(t), #[cfg(target_os = "android")] Self::Adbify(x) => x.set_connection_type(t) } }
+    fn ctrl_out(&mut self, rt: u8, r: u8, v: u16, i: u16, d: &[u8]) -> penumbra_mtk::error::Result<()> { match self { Self::Native(x) => x.ctrl_out(rt,r,v,i,d), #[cfg(target_os = "android")] Self::Adbify(x) => x.ctrl_out(rt,r,v,i,d) } }
+    fn ctrl_in(&mut self, rt: u8, r: u8, v: u16, i: u16, n: usize) -> penumbra_mtk::error::Result<Vec<u8>> { match self { Self::Native(x) => x.ctrl_in(rt,r,v,i,n), #[cfg(target_os = "android")] Self::Adbify(x) => x.ctrl_in(rt,r,v,i,n) } }
+}
+
 pub struct DeviceHandle {
-    pub device: Device<'static, PortType>,
+    pub device: Device<'static, RuntimePort>,
 }
 
 impl ConnectOpts {
@@ -91,8 +115,9 @@ impl ConnectOpts {
         match self.backend.to_ascii_lowercase().as_str() {
             "auto" => Ok(PortBackend::Auto),
             "libusb" => Ok(PortBackend::Libusb),
+            "adbify" => Ok(PortBackend::Auto),
             other => bail!(
-                "unknown backend {other:?}; this build supports 'auto' and 'libusb'"
+                "unknown backend {other:?}; supported backends: auto, libusb, adbify"
             ),
         }
     }
@@ -111,32 +136,61 @@ impl ConnectOpts {
 }
 
 /// Poll for a device until one appears or the deadline passes.
-fn find_port(opts: &ConnectOpts) -> Result<PortType> {
+fn find_port(opts: &ConnectOpts) -> Result<RuntimePort> {
     let backend = opts.backend()?;
+    let backend_name = opts.backend.to_ascii_lowercase();
     let (vid, pid) = opts.vid_pid()?;
     let deadline = Instant::now() + Duration::from_secs(opts.wait);
     let mut waited = false;
+    let mut last_bridge_error = String::new();
 
     loop {
-        match PortType::find_and_open(vid, pid, backend)
-            .context("USB enumeration failed")?
-        {
-            Some(port) => return Ok(port),
-            None => {
-                if Instant::now() >= deadline {
-                    bail!(
-                        "no MTK device found after {}s \
-                         (is it plugged in, powered off, and in BROM/preloader mode?)",
-                        opts.wait
-                    );
-                }
-                if !waited {
-                    eprintln!("waiting for a device to appear...");
-                    waited = true;
-                }
-                thread::sleep(Duration::from_millis(500));
+        #[cfg(target_os = "android")]
+        if backend_name == "auto" || backend_name == "adbify" {
+            match crate::android_ipc::AndroidIpcPort::connect_from_env() {
+                Ok(port) => return Ok(RuntimePort::Adbify(port)),
+                Err(error) => last_bridge_error = error.to_string(),
             }
         }
+
+        #[cfg(not(target_os = "android"))]
+        let _ = (&backend_name, &last_bridge_error);
+
+        #[cfg(not(target_os = "android"))]
+        if let Some(port) = PortType::find_and_open(vid, pid, backend)
+            .context("USB enumeration failed")?
+        {
+            return Ok(RuntimePort::Native(port));
+        }
+
+        #[cfg(target_os = "android")]
+        if backend_name == "libusb" {
+            if let Some(port) = PortType::find_and_open(vid, pid, backend)
+                .context("USB enumeration failed")?
+            {
+                return Ok(RuntimePort::Native(port));
+            }
+        }
+
+        if Instant::now() >= deadline {
+            #[cfg(target_os = "android")]
+            if backend_name == "auto" || backend_name == "adbify" {
+                bail!(
+                    "no active Adbify USB session after {}s; select the MTK device in Adbify and grant USB permission first ({})",
+                    opts.wait,
+                    last_bridge_error
+                );
+            }
+            bail!(
+                "no MTK device found after {}s (is it plugged in, powered off, and in BROM/preloader mode?)",
+                opts.wait
+            );
+        }
+        if !waited {
+            eprintln!("waiting for a device to appear...");
+            waited = true;
+        }
+        thread::sleep(Duration::from_millis(500));
     }
 }
 
