@@ -12,10 +12,9 @@ use anyhow::{bail, Context, Result};
 
 use penumbra_mtk::da::extensions::{KeyDeriveId, KeySize, SejKeyId, SejParams};
 use penumbra_mtk::hacc::{BootPartition, IntoBytes, LockState, OFFSET_SLOT_SUFFIX};
-use penumbra_mtk::port::PortType;
 use penumbra_mtk::{BootMode, Device, RpmbRegion, Storage};
 
-use crate::connect::{self, ConnectOpts};
+use crate::connect::{self, ConnectOpts, RuntimePort};
 use crate::numbers::{human_bytes, parse_u32, parse_u64, parse_usize};
 use crate::progress::{end_progress, progress};
 
@@ -198,7 +197,7 @@ pub fn read_partition(opts: &ConnectOpts, partition: &str, output: &str) -> Resu
     let mut handle = connect::connect(opts)?;
     connect::enter_da(&mut handle)?;
 
-    let dev: &mut Device<'static, PortType> = &mut handle.device;
+    let dev: &mut Device<'static, RuntimePort> = &mut handle.device;
     let size = dev
         .get_partition(partition)
         .map(|p| p.size)
