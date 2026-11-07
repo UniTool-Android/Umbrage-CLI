@@ -1,7 +1,7 @@
 //! Adbify USB-session IPC transport.
 //!
-//! The Android app owns UsbDeviceConnection and serves this protocol over a
-//! private filesystem Unix-domain socket. The terminal child process connects
+//! The Android app owns UsbDeviceConnection and serves this protocol over an
+//! authenticated loopback TCP socket. The terminal child process connects
 //! here; it never opens USBFS or asks Android for USB permission itself.
 
 use std::io::{Read, Write};
