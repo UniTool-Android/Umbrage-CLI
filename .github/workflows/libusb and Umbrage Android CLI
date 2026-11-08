@@ -1,0 +1,215 @@
+name: UniTool libusb and Umbrage Android CLI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - "docs/ADBIFY-USB-RUNTIME.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - "docs/ADBIFY-USB-RUNTIME.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android-build.yml"
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.abi }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            clang: aarch64-linux-android
+
+    env:
+      ANDROID_API: "24"
+      NDK_VERSION: "25.2.9519653"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout UniTool USB runtime
+        uses: actions/checkout@v4
+        with:
+          repository: UniTool-Android/Adbify
+          ref: main
+          path: UniTool-core
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-33 build-tools;33.0.2 ndk;25.2.9519653 cmake;3.22.1"
+
+      - name: Set Android NDK path
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Set up host Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.10"
+
+      - name: Prepare UniTool Android CPython inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          python3 -m pip install --disable-pip-version-check --upgrade "setuptools>=75"
+          mkdir -p UniTool-core/build/python-runtime
+          gh release download Python-lib --repo UniTool-Android/Adbify \
+            --pattern python-3.14.10-aarch64-linux-android.tar.gz \
+            --dir UniTool-core/build/python-runtime
+          echo "423c80b957330cf0ebb92b9b20f2294c292144a441bdb0ceb8c69d14928e569b  UniTool-core/build/python-runtime/python-3.14.10-aarch64-linux-android.tar.gz" | sha256sum --check
+          cd UniTool-core
+          bash scripts/prepare-python-runtime.sh \
+            build/python-runtime/python-3.14.10-aarch64-linux-android.tar.gz \
+            app/src/main/assets/bootstrap
+          test -s app/src/main/jniLibs/arm64-v8a/libpython3.14.so
+          test -s app/src/main/cpp/python/include/Python.h
+
+      - name: Build UniTool USB libraries from source
+        working-directory: UniTool-core
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:externalNativeBuildDebug
+          test -s app/src/main/jniLibs/arm64-v8a/libusb.so
+          test -s app/src/main/jniLibs/arm64-v8a/libusb_bridge.so
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d app/src/main/jniLibs/arm64-v8a/libusb.so | grep -F 'libusb_bridge.so'
+
+      - name: Install Rust nightly and Android targets
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
+          rustup target add ${{ matrix.target }} --toolchain nightly
+
+      - name: Configure Android cross-compilers
+        shell: bash
+        run: |
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang"
+          echo "CC_${{ matrix.target }}=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "AR_${{ matrix.target }}=$TOOLCHAIN/llvm-ar" >> "$GITHUB_ENV"
+          TARGET_ENV=$(echo "${{ matrix.target }}" | tr "[:lower:]-" "[:upper:]_")
+          echo "CARGO_TARGET_${TARGET_ENV}_LINKER=$TOOLCHAIN/${{ matrix.clang }}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+          echo "UNITOOL_USB_BRIDGE_SOURCE=$GITHUB_WORKSPACE/UniTool-core/app/src/main/cpp/usb_bridge.cpp" >> "$GITHUB_ENV"
+          echo "CXX=$TOOLCHAIN/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-${{ matrix.target }}
+
+      - name: Build Android CLI against UniTool libusb
+        run: |
+          ./scripts/build-android-unitool.sh "$GITHUB_WORKSPACE/UniTool-core/app/src/main/jniLibs/${{ matrix.abi }}"
+
+      - name: Stage Android outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ABI="${{ matrix.abi }}"
+          TARGET="${{ matrix.target }}"
+          OUT="dist/android"
+          mkdir -p "$OUT/jniLibs/$ABI" "$OUT/bin/$ABI"
+
+          BIN="target/$TARGET/release/umbrage-cli"
+          test -s "$BIN"
+
+          llvm-strip --strip-unneeded "$BIN"
+
+          cp "$BIN" "$OUT/bin/$ABI/umbrage-cli"
+          chmod 0755 "$OUT/bin/$ABI/umbrage-cli"
+
+          cp "UniTool-core/app/src/main/jniLibs/$ABI/libumbrage_cli_exec.so" "$OUT/jniLibs/$ABI/"
+          cp "UniTool-core/app/src/main/jniLibs/$ABI/libusb.so" "$OUT/jniLibs/$ABI/"
+          cp "UniTool-core/app/src/main/jniLibs/$ABI/libusb_bridge.so" "$OUT/jniLibs/$ABI/"
+          llvm-readelf -d "$OUT/jniLibs/$ABI/libusb.so" | grep -F 'libusb_bridge.so'
+          llvm-readelf -d "$OUT/jniLibs/$ABI/libumbrage_cli_exec.so" | grep -F 'libusb.so'
+          file "$OUT/jniLibs/$ABI/libumbrage_cli_exec.so" "$OUT/bin/$ABI/umbrage-cli"
+          llvm-readelf -h "$OUT/jniLibs/$ABI/libumbrage_cli_exec.so" | grep -E 'Class:|Machine:'
+          llvm-readelf -h "$OUT/bin/$ABI/umbrage-cli" | grep -E 'Class:|Machine:'
+
+      - name: Upload ABI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbrage-android-${{ matrix.abi }}
+          path: dist/android/
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Package Android release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download ABI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: umbrage-android-*
+          path: dist/android
+          merge-multiple: true
+
+      - name: Create checksums and release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/android/jniLibs/arm64-v8a/libumbrage_cli_exec.so
+          test -s dist/android/jniLibs/arm64-v8a/libusb.so
+          test -s dist/android/jniLibs/arm64-v8a/libusb_bridge.so
+          test -s dist/android/bin/arm64-v8a/umbrage-cli
+
+          find dist/android -type f -print0 | sort -z | xargs -0 sha256sum > dist/android/SHA256SUMS
+          cd dist
+          tar -czf umbrage-android-native.tar.gz android
+          zip -qr umbrage-android-native.zip android
+
+      - name: Upload combined Android package
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbrage-android-native
+          path: |
+            dist/umbrage-android-native.tar.gz
+            dist/umbrage-android-native.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach packages to GitHub release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/umbrage-android-native.tar.gz
+            dist/umbrage-android-native.zip
