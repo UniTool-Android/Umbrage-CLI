@@ -56,7 +56,7 @@ jobs:
       - name: Checkout UniTool USB runtime
         uses: actions/checkout@v4
         with:
-          repository: UniTool-Android/Adbify
+          repository: UniTool-Android/UniTool-core
           ref: main
           path: UniTool-core
 
