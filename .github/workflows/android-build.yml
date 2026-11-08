@@ -59,26 +59,39 @@ jobs:
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Fetch UniTool-core broker runtime
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Checkout UniTool-core USB broker sources
+        uses: actions/checkout@v4
+        with:
+          repository: UniTool-Android/UniTool-core
+          ref: feature/termux-runtime
+          path: unitool-core
+
+      - name: Build UniTool broker-backed libusb for Android
+        shell: bash
         run: |
           set -euo pipefail
-          RUN_ID="$(gh run list --repo UniTool-Android/UniTool-core \
-            --workflow android-build.yml --branch feature/termux-runtime \
-            --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-          test -n "$RUN_ID" && test "$RUN_ID" != "null"
-          mkdir -p build/unitool-core-apk build/unitool-runtime
-          gh run download "$RUN_ID" --repo UniTool-Android/UniTool-core \
-            --name unitool-debug-apk --dir build/unitool-core-apk
-          APK="$(find build/unitool-core-apk -type f -name '*.apk' -print -quit)"
-          test -n "$APK"
-          unzip -p "$APK" lib/arm64-v8a/libusb.so > build/unitool-runtime/libusb.so
-          unzip -p "$APK" lib/arm64-v8a/libusb_bridge.so > build/unitool-runtime/libusb_bridge.so
-          test -s build/unitool-runtime/libusb.so
-          test -s build/unitool-runtime/libusb_bridge.so
-          mkdir -p build/unitool-runtime/include
-          curl -fsSL https://raw.githubusercontent.com/libusb/libusb/15a7ebb4d426c5ce196684347d2b7cafad862626/libusb/libusb.h -o build/unitool-runtime/include/libusb.h
+          CORE_CPP="$GITHUB_WORKSPACE/unitool-core/app/src/main/cpp"
+          CORE_JNI="$GITHUB_WORKSPACE/unitool-core/app/src/main/jniLibs/arm64-v8a"
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # The selected CMake targets do not use CPython; satisfy the
+          # top-level imported-target existence checks without linking Python.
+          mkdir -p "$GITHUB_WORKSPACE/build/python-stub"
+          : > "$GITHUB_WORKSPACE/build/python-stub/Python.h"
+          : > "$GITHUB_WORKSPACE/build/python-stub/libpython3.14.so"
+          cmake -S "$CORE_CPP" -B "$GITHUB_WORKSPACE/build/unitool-usb" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPYTHON_ANDROID_INCLUDE="$GITHUB_WORKSPACE/build/python-stub" \
+            -DPYTHON_ANDROID_LIBRARY="$GITHUB_WORKSPACE/build/python-stub/libpython3.14.so"
+          cmake --build "$GITHUB_WORKSPACE/build/unitool-usb" --target libusb_prebuilt usb_bridge --parallel
+          test -s "$CORE_JNI/libusb.so"
+          test -s "$CORE_JNI/libusb_bridge.so"
+          mkdir -p "$GITHUB_WORKSPACE/build/unitool-runtime/include"
+          cp "$CORE_JNI/libusb.so" "$GITHUB_WORKSPACE/build/unitool-runtime/libusb.so"
+          cp "$CORE_JNI/libusb_bridge.so" "$GITHUB_WORKSPACE/build/unitool-runtime/libusb_bridge.so"
+          curl -fsSL https://raw.githubusercontent.com/libusb/libusb/15a7ebb4d426c5ce196684347d2b7cafad862626/libusb/libusb.h \
+            -o "$GITHUB_WORKSPACE/build/unitool-runtime/include/libusb.h"
           echo "UNITOOL_LIBUSB_DIR=$GITHUB_WORKSPACE/build/unitool-runtime" >> "$GITHUB_ENV"
           echo "UNITOOL_LIBUSB_INCLUDE_DIR=$GITHUB_WORKSPACE/build/unitool-runtime/include" >> "$GITHUB_ENV"
 
