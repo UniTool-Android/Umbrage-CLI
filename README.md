@@ -93,27 +93,6 @@ cd cli
 cargo build --release --target aarch64-linux-android
 ```
 
-For UniTool-core, build the `umbrage-cli` executable against the app's
-broker-patched shared `libusb.so`. The caller supplies a `libusb-1.0.pc` whose
-`Libs` entry resolves to that exact library, then builds without the `vendored`
-feature:
-
-```sh
-PKG_CONFIG_ALLOW_CROSS=1 \\
-PKG_CONFIG_PATH=/path/to/unitool-pkgconfig \\
-PKG_CONFIG_LIBDIR=/path/to/unitool-pkgconfig \\
-CC_aarch64_linux_android=/path/to/ndk/aarch64-linux-android24-clang \\
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=/path/to/ndk/aarch64-linux-android24-clang \\
-cargo build --release --target aarch64-linux-android --bin umbrage-cli
-```
-
-The resulting ELF must have `DT_NEEDED: libusb.so`; it must not contain a
-statically bundled libusb. At runtime UniTool places its `libusb.so` and
-`libusb_bridge.so` in the native library search path and starts the CLI as a
-same-UID child process, allowing the existing USB FD broker to serve only
-`UsbManager`-authorized sessions. Do not launch this Android build outside
-UniTool's authorized USB session lifecycle.
-
 **Prerequisites:**
 
 | Requirement | Install / set |

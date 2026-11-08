@@ -11,10 +11,11 @@ repository = "https://github.com/progzone122/umbrage"
 # package, so its Qt build.rs never runs and this binary links no Qt at all.
 
 [dependencies]
-# The Android build links dynamically to UniTool-core's broker-patched
-# libusb.so. Do not enable rusb/libusb1-sys "vendored": that would embed a
-# second libusb implementation and bypass Android UsbManager authorization.
+# Same pin as the GUI, same feature set. "libusb" pulls rusb; declaring rusb
+# with "vendored" below statically links libusb so the CLI needs no system
+# libusb at runtime.
 penumbra-mtk = { git = "https://github.com/umbrage-org/umbrage-penumbra", package = "penumbra-mtk", rev = "55fb158", default-features = false, features = ["libusb", "exploits"] }
+rusb = { version = "0.9", features = ["vendored"] }
 
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

@@ -1272,7 +1272,6 @@ dependencies = [
  "log",
  "once_cell",
  "penumbra-mtk",
- "rusb",
  "serde",
  "serde_json",
  "sha2",

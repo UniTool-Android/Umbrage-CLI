@@ -9,6 +9,5 @@ components = ["rustfmt", "clippy"]
 [target.aarch64-linux-android]
 # Target triple for aarch64 Android. The Rust standard library for this target
 # is installed automatically (see `rustup target add aarch64-linux-android`).
-# A C cross-compiler (aarch64-linux-android-clang) is needed for native
-# dependencies such as ring. UniTool builds libusb separately and links it
-# dynamically through pkg-config; do not enable rusb's vendored feature.
+# A C cross-compiler (aarch64-linux-android-clang) is needed for the vendored
+# C dependencies (libusb, ring); typically provided by the Android NDK.
