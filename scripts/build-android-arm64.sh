@@ -52,12 +52,21 @@ export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android21-clang"
 
 cd "$ROOT"
-cargo build --release --target "$TARGET" --no-default-features --features android
+cargo build --locked --release --target "$TARGET" --no-default-features --features android --lib --bins
 
 BIN="$ROOT/target/$TARGET/release/umbrage-cli"
 READELF="$TOOLCHAIN/llvm-readelf"
 "$READELF" -d "$BIN" | grep -q 'Shared library: \[libusb.so\]' || {
     echo "error: CLI is not dynamically linked to UniTool's libusb.so" >&2
+    exit 1
+}
+LIB="$ROOT/target/$TARGET/release/libumbrage_cli.so"
+if [[ ! -s "$LIB" ]]; then
+    echo "error: Android shared library was not produced: $LIB" >&2
+    exit 1
+fi
+"$READELF" -d "$LIB" | grep -q 'Shared library: [libusb.so]' || {
+    echo "error: JNI shared library is not dynamically linked to UniTool's libusb.so" >&2
     exit 1
 }
 "$READELF" -d "$LIBUSB_SO" | grep -q 'Shared library: \[libusb_bridge.so\]' || {
