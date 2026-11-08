@@ -11,11 +11,11 @@ repository = "https://github.com/progzone122/umbrage"
 # package, so its Qt build.rs never runs and this binary links no Qt at all.
 
 [dependencies]
-# Same pin as the GUI, same feature set. "libusb" pulls rusb; declaring rusb
-# with "vendored" below statically links libusb so the CLI needs no system
-# libusb at runtime.
+# Same pin as the GUI, same feature set. Android links dynamically to UniTool's
+# broker-backed libusb rather than compiling a second copy.
+
 penumbra-mtk = { git = "https://github.com/umbrage-org/umbrage-penumbra", package = "penumbra-mtk", rev = "55fb158", default-features = false, features = ["libusb", "exploits"] }
-rusb = { version = "0.9", features = ["vendored"] }
+rusb = "0.9"
 
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

@@ -52,14 +52,14 @@ access, RPMB, SEJ AES, and hardware key derivation.
 | Requirement | Why |
 | --- | --- |
 | Rust **nightly** (via [rustup](https://rustup.rs)) | `penumbra-mtk` uses nightly-only features; `cli/rust-toolchain.toml` selects it automatically |
-| `pkg-config`, `libudev-dev` | `rusb` links `libudev` for USB enumeration |
-| A C toolchain (`cc`) | Builds the vendored `libusb` and `ring` |
+| `pkg-config`, `libudev-dev`, `libusb-1.0-0-dev` | `rusb` links the system libusb and `libudev` for USB enumeration |
+| A C toolchain (`cc`) | Builds native dependencies such as `ring` |
 | Network access | First build fetches crates from crates.io |
 
 On Debian/Ubuntu:
 
 ```sh
-sudo apt install pkg-config libudev-dev build-essential
+sudo apt install pkg-config libudev-dev libusb-1.0-0-dev build-essential
 ```
 
 ### Build and test
