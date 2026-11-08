@@ -17,10 +17,6 @@ use penumbra_mtk::{Device, DeviceBuilder};
 
 use crate::repo;
 
-/// `Device` borrows the DA/auth/preloader blobs for its whole lifetime, and
-/// the CLI hands the device around behind a concrete `'static` type. Leaking
-/// the buffers is the same trick the GUI uses, and it is free here: the
-/// process runs one command and exits.
 fn leak(bytes: Vec<u8>) -> &'static [u8] {
     Box::leak(bytes.into_boxed_slice())
 }
@@ -48,8 +44,7 @@ pub struct ConnectOpts {
     #[arg(long, global = true)]
     pub preloader: Option<PathBuf>,
 
-    /// USB backend: auto or libusb. (Only these two are compiled in; the
-    /// nusb and serialport backends are feature-gated off in this build.)
+    /// USB backend: auto, libusb, or unitool (Android broker-backed libusb)
     #[arg(long, global = true, default_value = "auto")]
     pub backend: String,
 
@@ -67,9 +62,6 @@ pub struct ConnectOpts {
 
     /// Use the online template repository for this device's
     /// da/auth/preloader instead of passing them by hand
-    ///
-    /// Any file you do pass explicitly (--da/--auth/--preloader) still wins,
-    /// so a template can supply just the pieces you left out.
     #[arg(long, global = true)]
     pub template: Option<String>,
 
@@ -90,9 +82,9 @@ impl ConnectOpts {
     fn backend(&self) -> Result<PortBackend> {
         match self.backend.to_ascii_lowercase().as_str() {
             "auto" => Ok(PortBackend::Auto),
-            "libusb" => Ok(PortBackend::Libusb),
+            "libusb" | "unitool" => Ok(PortBackend::Libusb),
             other => bail!(
-                "unknown backend {other:?}; this build supports 'auto' and 'libusb'"
+                "unknown backend {other:?}; this build supports 'auto', 'libusb', and 'unitool'"
             ),
         }
     }
@@ -110,7 +102,6 @@ impl ConnectOpts {
     }
 }
 
-/// Poll for a device until one appears or the deadline passes.
 fn find_port(opts: &ConnectOpts) -> Result<PortType> {
     let backend = opts.backend()?;
     let (vid, pid) = opts.vid_pid()?;
@@ -119,14 +110,13 @@ fn find_port(opts: &ConnectOpts) -> Result<PortType> {
 
     loop {
         match PortType::find_and_open(vid, pid, backend)
-            .context("USB enumeration failed")?
+            .context("USB enumeration failed; on Android ensure UniTool USB permission is granted and the broker service is running")?
         {
             Some(port) => return Ok(port),
             None => {
                 if Instant::now() >= deadline {
                     bail!(
-                        "no MTK device found after {}s \
-                         (is it plugged in, powered off, and in BROM/preloader mode?)",
+                        "no MTK device found after {}s (check USB connection, Android permission, and broker availability)",
                         opts.wait
                     );
                 }
@@ -140,15 +130,7 @@ fn find_port(opts: &ConnectOpts) -> Result<PortType> {
     }
 }
 
-/// Connect and complete the BROM/preloader handshake.
-///
-/// The returned device is *not* yet in DA mode; call [`enter_da`] before any
-/// operation that touches storage. `info` deliberately skips it so it can
-/// still identify a chip that refuses DA upload.
 pub fn connect(opts: &ConnectOpts) -> Result<DeviceHandle> {
-    // Read explicitly supplied blobs first, before any USB work, so a missing
-    // or bad --da/--auth/--preloader path is reported as such rather than
-    // being masked by "no device found".
     let da = match &opts.da {
         Some(p) => Some(read_blob(p)?),
         None => None,
@@ -162,18 +144,12 @@ pub fn connect(opts: &ConnectOpts) -> Result<DeviceHandle> {
         None => None,
     };
 
-    // --template fills in whichever of the three the user left out. An
-    // explicit file always wins over the template, matching the GUI, where
-    // hand-picked files survive applying a template. If all three were given
-    // explicitly there is nothing to fetch, so skip the network entirely.
     let template = match (&opts.template, da.is_none() || auth.is_none() || preloader.is_none()) {
         (Some(_), false) => {
             eprintln!("note: --template ignored (all of --da/--auth/--preloader given)");
             None
         }
-        (Some(c), true) => {
-            Some(repo::resolve(c, opts.template_version, opts.refresh_template)?)
-        }
+        (Some(c), true) => Some(repo::resolve(c, opts.template_version, opts.refresh_template)?),
         (None, _) => None,
     };
 
@@ -182,25 +158,16 @@ pub fn connect(opts: &ConnectOpts) -> Result<DeviceHandle> {
     let preloader = pick(preloader, template.as_ref().and_then(|t| t.get("preloader")))?;
 
     let port = find_port(opts)?;
-
     let mut builder = DeviceBuilder::new(port);
-    if let Some(d) = da {
-        builder = builder.with_da_data(d);
-    }
-    if let Some(a) = auth {
-        builder = builder.with_auth(a);
-    }
-    if let Some(p) = preloader {
-        builder = builder.with_preloader(p);
-    }
+    if let Some(d) = da { builder = builder.with_da_data(d); }
+    if let Some(a) = auth { builder = builder.with_auth(a); }
+    if let Some(p) = preloader { builder = builder.with_preloader(p); }
 
     let mut device = builder.build().context("failed to build device")?;
     device.init().context("handshake failed")?;
-
     Ok(DeviceHandle { device })
 }
 
-/// Prefer an explicitly supplied blob; fall back to the template's copy.
 fn pick(
     explicit: Option<&'static [u8]>,
     templated: Option<&Path>,
@@ -212,18 +179,11 @@ fn pick(
     }
 }
 
-/// Upload the DA and enable the partition/bootstrapping commands.
 pub fn enter_da(handle: &mut DeviceHandle) -> Result<()> {
-    handle
-        .device
-        .enter_da_mode()
+    handle.device.enter_da_mode()
         .context("failed to enter DA mode (check --da/--auth/--preloader)")
 }
 
-/// Build `ConnectOpts` from raw C strings (for the native library API).
-///
-/// Empty or NULL strings are treated as "not provided". `wait_secs` of 0
-/// means a short default wait (the same as the CLI default of 15 seconds).
 pub fn parse_connect_opts(
     da: *const c_char,
     auth: *const c_char,
@@ -231,14 +191,10 @@ pub fn parse_connect_opts(
     wait_secs: u64,
 ) -> Result<ConnectOpts> {
     fn opt_path(p: *const c_char) -> Option<PathBuf> {
-        if p.is_null() {
-            return None;
-        }
+        if p.is_null() { return None; }
         let cstr = unsafe { std::ffi::CStr::from_ptr(p) };
         let s = cstr.to_str().ok()?;
-        if s.is_empty() {
-            return None;
-        }
+        if s.is_empty() { return None; }
         Some(PathBuf::from(s))
     }
 
@@ -246,7 +202,7 @@ pub fn parse_connect_opts(
         da: opt_path(da),
         auth: opt_path(auth),
         preloader: opt_path(preloader),
-        backend: "auto".to_string(),
+        backend: if cfg!(target_os = "android") { "unitool" } else { "auto" }.to_string(),
         vid: None,
         pid: None,
         wait: if wait_secs == 0 { 15 } else { wait_secs },
@@ -256,23 +212,24 @@ pub fn parse_connect_opts(
     })
 }
 
-// ----------------------------------------------------------- tests
 #[cfg(test)]
 mod tests {
     use super::parse_connect_opts;
 
     #[test]
     fn empty_paths_are_none() {
-        let opts = parse_connect_opts(
-            std::ptr::null(),
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-        )
-        .unwrap();
+        let opts = parse_connect_opts(std::ptr::null(), std::ptr::null(), std::ptr::null(), 0).unwrap();
         assert!(opts.da.is_none());
         assert!(opts.auth.is_none());
         assert!(opts.preloader.is_none());
         assert_eq!(opts.wait, 15);
+    }
+
+    #[test]
+    fn android_default_selects_unitool_backend() {
+        let opts = parse_connect_opts(std::ptr::null(), std::ptr::null(), std::ptr::null(), 1).unwrap();
+        if cfg!(target_os = "android") {
+            assert_eq!(opts.backend, "unitool");
+        }
     }
 }
