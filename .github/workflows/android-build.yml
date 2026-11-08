@@ -59,6 +59,29 @@ jobs:
           sdkmanager --install "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
+      - name: Fetch UniTool-core broker runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID="$(gh run list --repo UniTool-Android/UniTool-core \
+            --workflow android-build.yml --branch feature/termux-runtime \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          test -n "$RUN_ID" && test "$RUN_ID" != "null"
+          mkdir -p build/unitool-core-apk build/unitool-runtime
+          gh run download "$RUN_ID" --repo UniTool-Android/UniTool-core \
+            --name unitool-debug-apk --dir build/unitool-core-apk
+          APK="$(find build/unitool-core-apk -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          unzip -p "$APK" lib/arm64-v8a/libusb.so > build/unitool-runtime/libusb.so
+          unzip -p "$APK" lib/arm64-v8a/libusb_bridge.so > build/unitool-runtime/libusb_bridge.so
+          test -s build/unitool-runtime/libusb.so
+          test -s build/unitool-runtime/libusb_bridge.so
+          mkdir -p build/unitool-runtime/include
+          curl -fsSL https://raw.githubusercontent.com/libusb/libusb/15a7ebb4d426c5ce196684347d2b7cafad862626/libusb/libusb.h -o build/unitool-runtime/include/libusb.h
+          echo "UNITOOL_LIBUSB_DIR=$GITHUB_WORKSPACE/build/unitool-runtime" >> "$GITHUB_ENV"
+          echo "UNITOOL_LIBUSB_INCLUDE_DIR=$GITHUB_WORKSPACE/build/unitool-runtime/include" >> "$GITHUB_ENV"
+
       - name: Install Rust nightly and Android targets
         run: |
           rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
@@ -80,9 +103,19 @@ jobs:
         with:
           key: android-${{ matrix.target }}
 
-      - name: Build Android shared library and CLI
+      - name: Build against UniTool broker-backed libusb
+        env:
+          RUSTUP_TOOLCHAIN: nightly
         run: |
-          cargo +nightly build --locked --release --target ${{ matrix.target }} --features android --lib --bins
+          chmod +x scripts/build-android-arm64.sh
+          scripts/build-android-arm64.sh
+          BIN="target/${{ matrix.target }}/release/umbrage-cli"
+          LIB="target/${{ matrix.target }}/release/libumbrage_cli.so"
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          for artifact in "$BIN" "$LIB"; do
+            "$READELF" -d "$artifact" | grep -F 'Shared library: [libusb.so]'
+          done
+          "$READELF" -d "$UNITOOL_LIBUSB_DIR/libusb.so" | grep -F 'Shared library: [libusb_bridge.so]'
 
       - name: Stage Android outputs
         shell: bash
@@ -91,7 +124,9 @@ jobs:
           ABI="${{ matrix.abi }}"
           TARGET="${{ matrix.target }}"
           OUT="dist/android"
-          mkdir -p "$OUT/jniLibs/$ABI" "$OUT/bin/$ABI"
+          mkdir -p "$OUT/jniLibs/$ABI" "$OUT/bin/$ABI" "$OUT/lib/$ABI"
+          cp "$UNITOOL_LIBUSB_DIR/libusb.so" "$OUT/lib/$ABI/libusb.so"
+          cp "$UNITOOL_LIBUSB_DIR/libusb_bridge.so" "$OUT/lib/$ABI/libusb_bridge.so"
 
           LIB="target/$TARGET/release/libumbrage_cli.so"
           BIN="target/$TARGET/release/umbrage-cli"
